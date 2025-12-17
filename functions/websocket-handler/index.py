@@ -174,7 +174,10 @@ def handler(event, context):
                 tickr = body['tickr']
                 logger.info(f"Received getQualitativeQnA request for: {tickr}")
                 send_response(domainName, stg, connection_id, req_recvd_response) # Responding with request received to avoid connection timeout
-                send_response(domainName, stg, connection_id, "getQualitativeQnA")
+                # Use RAG to query Knowledge Base with the user's question
+                from lib.investment_chat import query_knowledge_base_rag
+                rag_response = query_knowledge_base_rag(tickr, connection_id)
+                send_response(domainName, stg, connection_id, rag_response)
             elif body["action"] == "chat":
                 question = body['question']
                 logger.info(f"Received chat request for: {question}")

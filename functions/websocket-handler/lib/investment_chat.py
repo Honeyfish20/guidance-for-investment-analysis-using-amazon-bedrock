@@ -29,6 +29,7 @@ GUARDRAIL_VERSION = os.environ["BEDROCK_GUARDRAILSVERSION"]
 
 bedrock_region = os.environ["AWS_REGION"]
 bedrock_runtime = boto3.client("bedrock-runtime", region_name=bedrock_region)
+bedrock_agent_runtime = boto3.client("bedrock-agent-runtime", region_name=bedrock_region)
 
 logger.info(f"KB_ID : {KB_ID}")
 
@@ -95,15 +96,55 @@ LLM_AGENT_TOOLS = [
 
 
 def chat_investment(user_input, socket_conn_id):
-    nova_chat_llm.bind_tools(LLM_AGENT_TOOLS)
+    """
+    Chat function that uses RAG pattern - first retrieves from Knowledge Base,
+    then generates response with context.
+    """
+    # Step 1: Retrieve relevant context from Knowledge Base
+    logger.info(f"Retrieving context from KB for: {user_input}")
+    retrieve_response = bedrock_agent_runtime.retrieve(
+        knowledgeBaseId=KB_ID,
+        retrievalQuery={"text": user_input},
+        retrievalConfiguration={
+            "vectorSearchConfiguration": {"numberOfResults": 5}
+        }
+    )
+    
+    retrieval_results = retrieve_response.get("retrievalResults", [])
+    context_parts = []
+    for result in retrieval_results:
+        content = result.get("content", {}).get("text", "")
+        score = result.get("score", 0)
+        source = result.get("location", {}).get("s3Location", {}).get("uri", "Unknown")
+        if content:
+            context_parts.append(content)
+            logger.info(f"KB doc score={score:.2f}, source={source}, content_preview={content[:200]}...")
+    
+    kb_context = "\n\n".join(context_parts) if context_parts else ""
+    logger.info(f"Retrieved {len(retrieval_results)} documents from KB, total context length: {len(kb_context)}")
+    
+    # Step 2: Build prompt with KB context
     history = DynamoDBChatMessageHistory(
         table_name=CHAT_HISTORY_TBL_NM,
         session_id=socket_conn_id
     )
-    print(f'history: {history.messages}')
-    prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", "You are a helpful assistant."),
+    
+    # Create system prompt that includes KB context
+    system_prompt = """You are a helpful investment analyst assistant. 
+Answer questions based on the provided context from financial documents.
+If the context contains relevant information, use it to provide accurate answers with specific data.
+If the context doesn't contain relevant information, say so and provide general knowledge."""
+    
+    if kb_context:
+        system_prompt += f"""
+
+Here is relevant context from the knowledge base documents:
+{kb_context}
+
+Use this context to answer the user's question accurately."""
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{question}"),
     ])
@@ -119,3 +160,60 @@ def chat_investment(user_input, socket_conn_id):
     response = chain_with_history.invoke({"question": user_input}, {"configurable": {"session_id": socket_conn_id}})
     logger.info(f"chat response: {response.content}")
     return markdown.markdown(response.content)
+
+
+def query_knowledge_base_rag(user_query: str, socket_conn_id: str) -> str:
+    """
+    Query Knowledge Base using RAG (Retrieve and Generate) pattern.
+    This function retrieves relevant documents from KB and uses LLM to generate answer.
+    """
+    logger.info(f"RAG Query: {user_query}")
+    
+    # Step 1: Retrieve relevant documents from Knowledge Base
+    retrieve_response = bedrock_agent_runtime.retrieve(
+        knowledgeBaseId=KB_ID,
+        retrievalQuery={"text": user_query},
+        retrievalConfiguration={
+            "vectorSearchConfiguration": {"numberOfResults": 5}
+        }
+    )
+    
+    # Extract retrieved content
+    retrieval_results = retrieve_response.get("retrievalResults", [])
+    context_parts = []
+    citations = []
+    
+    for i, result in enumerate(retrieval_results):
+        content = result.get("content", {}).get("text", "")
+        source = result.get("location", {}).get("s3Location", {}).get("uri", "Unknown")
+        score = result.get("score", 0)
+        context_parts.append(f"[Document {i+1}] (Score: {score:.2f})\n{content}")
+        citations.append({"source": source, "score": score})
+    
+    context = "\n\n".join(context_parts)
+    logger.info(f"Retrieved {len(retrieval_results)} documents from Knowledge Base")
+    
+    if not context_parts:
+        return {"answer": "No relevant documents found in the knowledge base.", "citations": []}
+    
+    # Step 2: Generate answer using LLM with retrieved context
+    rag_prompt = f"""Based on the following context from financial documents, please answer the user's question.
+If the answer cannot be found in the context, say so clearly.
+
+Context:
+{context}
+
+User Question: {user_query}
+
+Please provide a comprehensive answer based on the context above. Include specific numbers and data from the documents when available."""
+
+    response = nova_chat_llm.invoke(rag_prompt)
+    answer = response.content
+    
+    logger.info(f"RAG response generated successfully")
+    
+    return {
+        "answer": markdown.markdown(answer),
+        "citations": citations,
+        "retrieved_count": len(retrieval_results)
+    }
