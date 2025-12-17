@@ -42,10 +42,15 @@ export class GenAIInfraStack extends cdk.Stack {
       destinationBucket: kbInvestmentResearchS3,
     });
 
+    const vectorCollection = new genai.opensearchserverless.VectorCollection(this, 'InvestmentAnalystVectorCollection', {
+      standbyReplicas: genai.opensearchserverless.VectorCollectionStandbyReplicas.DISABLED,
+    });
+
     const investmentAnalystVecKB = new genai.bedrock.VectorKnowledgeBase(this,
       'InvestmentAnalystVecKB', {
       embeddingsModel: genai.bedrock.BedrockFoundationModel.TITAN_EMBED_TEXT_V2_1024,
       name: "InvestmentAnalystVecKB",
+      vectorStore: vectorCollection,
     });
 
     const investmentAnalystKBS3Ds = new genai.bedrock.S3DataSource(this,

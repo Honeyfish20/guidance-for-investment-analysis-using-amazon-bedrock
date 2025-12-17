@@ -48,7 +48,7 @@ export class FrontEndStack extends cdk.Stack {
     const ALPHA_VANTAGE_APIKEY = this.node.tryGetContext('ALPHA_API_KEY');
 
     const accessLogsBucket = new s3.Bucket(this, 'FrontEndAccessLogsBucket', {
-      bucketName: 'fe-access-logs-bucket',
+      bucketName: `fe-access-logs-bucket-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
@@ -430,7 +430,7 @@ export class FrontEndStack extends cdk.Stack {
       defaultAction: {
         allow: {}
       },
-      scope: 'CLOUDFRONT',
+      scope: 'REGIONAL',
       visibilityConfig: {
         cloudWatchMetricsEnabled: true,
         metricName: 'InvestmentAnalystWAcl',
@@ -532,7 +532,8 @@ export class FrontEndStack extends cdk.Stack {
       enableLogging: true,
       logBucket: cfLogsBucket,
       logFilePrefix: "distribution-access-logs",
-      webAclId: invAnalystWebACL.attrArn,
+      // Note: CloudFront WAF WebACL must be created in us-east-1 region
+      // webAclId: invAnalystWebACL.attrArn,
     });
 
     const exportsAsset = s3deploy.Source.jsonData("aws-exports.json", {
